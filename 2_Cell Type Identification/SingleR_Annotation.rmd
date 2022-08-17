@@ -1,0 +1,110 @@
+---
+title: "Reference Based Automated Annotation with SingleR"
+author: "Zain Arifin"
+date: "2022-08-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(Seurat)
+library(SeuratData)
+library(SingleR)
+library(celldex)
+```
+
+## Predict with SingleR
+
+SingleR requires a reference datasets of labeled single cell datasets. Here we use the package celldex for reference.
+
+```{r load-data, warning=FALSE}
+#ref
+hpca.se <- celldex::HumanPrimaryCellAtlasData()
+
+#dataset
+InstallData("ifnb")
+LoadData("ifnb")
+
+counts <- Seurat::GetAssayData(ifnb)
+
+pred.ifnb.label.main <- SingleR(test = counts, ref = hpca.se,
+    labels = hpca.se$label.main)
+pred.ifnb.label.fine <- SingleR(test = counts, ref = hpca.se,
+    labels = hpca.se$label.fine)
+```
+
+## Preprocess single cell data with Seurat rPCA
+
+```{r}
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+# normalize and identify variable features for each dataset independently
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+# select features that are repeatedly variable across datasets for integration run PCA on each
+# dataset using these features
+features <- SelectIntegrationFeatures(object.list = ifnb.list)
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+immune.anchors <- FindIntegrationAnchors(object.list = ifnb.list, 
+                                         anchor.features = features, 
+                                         reduction = "rpca", k.anchor = 25)
+# this command creates an 'integrated' data assay
+immune.combined <- IntegrateData(anchorset = immune.anchors)
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(immune.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+immune.combined <- ScaleData(immune.combined, verbose = FALSE)
+immune.combined <- RunPCA(immune.combined, npcs = 30, verbose = FALSE)
+immune.combined <- RunUMAP(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindNeighbors(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindClusters(immune.combined, resolution = 2)
+```
+
+## VIZ
+
+```{r}
+immune.combined@meta.data$SingleR_main <- pred.ifnb.label.main$labels
+immune.combined@meta.data$SingleR_fine <- pred.ifnb.label.fine$labels
+
+p1 <- DimPlot(immune.combined, group.by = "seurat_annotations", label = T, repel = T)
+p2 <- DimPlot(immune.combined, group.by = "SingleR_fine", label = T) + guides(color = FALSE)
+p3 <- DimPlot(immune.combined, group.by = "SingleR_main", label = T)
+p4 <- DimPlot(immune.combined, group.by = "seurat_clusters", label = T, repel = T)
+
+p1
+p2
+p3
+p4
+```
+
+## Assign cell type to cluster
+
+```{r}
+meta <- immune.combined@meta.data
+
+celltype_summary <- meta %>%
+  group_by(seurat_clusters) %>%
+  count(SingleR_fine) %>%
+  slice(which.max(n)) %>%
+  ungroup()
+celltype_summary <- celltype_summary %>% dplyr::select(-n)
+names(celltype_summary)[2] <- "SingleR_Cluster"
+
+meta <- left_join(meta, celltype_summary)
+immune.combined@meta.data$SingleR_Cluster <- meta$SingleR_Cluster
+
+p5 <- DimPlot(immune.combined, group.by = "SingleR_Cluster", label = T, repel = T)
+p5
+p1
+```
+
