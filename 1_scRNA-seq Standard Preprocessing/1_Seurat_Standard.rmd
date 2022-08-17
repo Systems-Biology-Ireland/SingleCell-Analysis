@@ -7,6 +7,64 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
 library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(tidyverse)
 ```
+
+## Single Cell Analysis
+
+```{r load-data}
+InstallData("ifnb")
+LoadData("ifnb")
+
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+```
+
+## Preprocess scRNA-seq
+
+Prior integration, dataset must be pre processed independently. The steps are:
+
+1. Normalization
+The fastest and easiest way to normalize scRNA-seq data is to divided the raw value by total individual raw count followed log-transformation.
+
+2. Find variable features
+Calculate variance for each gene, sort them, and take top 2,000 most variables genes (default is 2,000).
+
+```{r preprocess}
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+features <- SelectIntegrationFeatures(object.list = ifnb.list, verbose = F)
+```
+
+
+## Integration
+
+3. Batch correction/integration
+Seurat uses Canonical Correlation Analysis (CCA) to find "anchors" to merge scRNA-seq data. Anchors refer to a similar biological state measured and weighted based on overlap in nearest neighbors. Seurat transforms the dataset into a shared space which allow mapping of of new data to the estimated referrence.
+
+
+```{r integration}
+anchors <- FindIntegrationAnchors(object.list = ifnb.list, anchor.features = features, verbose = F)
+dat.combined <- IntegrateData(anchorset = anchors) # create integrated seurat object
+DefaultAssay(dat.combined) <- 'integrated'
+dat.combined <- ScaleData(dat.combined, verbose = FALSE)
+dat.combined <- RunPCA(dat.combined, npcs = 10, verbose = FALSE)
+dat.combined <- FindNeighbors(dat.combined, dims = 1:10)
+dat.combined <- RunUMAP(dat.combined, dims = 1:10)
+dat.combined <- FindClusters(dat.combined, resolution = 0.7) 
+```
+
+```{r viz}
+p1 <- DimPlot(dat.combined, group.by = "seurat_clusters", label = T, repel = T)
+p2 <- DimPlot(dat.combined, group.by = "seurat_annotations", label = T, repel = T)
+p3 <- DimPlot(dat.combined, group.by = "stim")
+
+p1
+p2
+p3
+```
+

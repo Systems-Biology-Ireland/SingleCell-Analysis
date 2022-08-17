@@ -7,6 +7,111 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
 library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(tidyverse)
 ```
+
+
+
+## Seurat V2
+
+# install glmGamPoi#
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install("glmGamPoi")
+# install sctransform from Github
+devtools::install_github("satijalab/sctransform", ref = "develop")
+
+From seurat:
+"We recently introduced sctransform to perform normalization and variance stabilization of scRNA-seq datasets. We now release an updated version (‘v2’), based on our broad analysis of 59 scRNA-seq datasets spanning a range of technologies, systems, and sequencing depths. This update improves speed and memory consumption, the stability of parameter estimates, the identification of variable features, and the the ability to perform downstream differential expression analyses."
+
+In this data set, the batch source comes from two conditions, stimulated vs unstimulated. In this script, I am using scTransform to remove the batch effect. ScTransform uses Pearson residuals from “regularized negative binomial regression,” where cellular sequencing depth is utilized as a covariate in a generalized linear model to remove technical variance while still maintaining biological heterogeneity. One of the limitation of scTransform compared to other method is downstream analysis still needs to be performed on the RNA slot (unintegrated data). However, the scTransform v2 have function to perform downstream analysis, such as DEG without the need to switch back to RNA slot.
+
+
+## Load data and preprocess
+
+If there are many batch sources, you can create a loop and subset the seurat object based on the batch sources. Then, you can apply scTransform (normalization + scaling + find variable features) and PCA.
+
+```{r load-data}
+InstallData("ifnb")
+LoadData("ifnb")
+
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+
+for (i in 1:length(ifnb.list)){
+  ifnb.list[[i]] <- SCTransform(ifnb.list[[i]], vst.flavor = "v2", verbose = FALSE) %>%
+    RunPCA(npcs = 30, verbose = FALSE) %>%
+    RunUMAP(reduction = "pca", dims = 1:30, verbose = FALSE) %>%
+    FindNeighbors(reduction = "pca", dims = 1:30, verbose = FALSE) %>%
+    FindClusters(resolution = 0.7, verbose = FALSE)
+}
+```
+
+```{r integration-SCT}
+features <- SelectIntegrationFeatures(object.list = ifnb.list, nfeatures = 3000)
+ifnb.list <- PrepSCTIntegration(object.list = ifnb.list, anchor.features = features)
+
+immune.anchors <- FindIntegrationAnchors(object.list = ifnb.list, normalization.method = "SCT",
+    anchor.features = features)
+immune.combined.sct <- IntegrateData(anchorset = immune.anchors, normalization.method = "SCT")
+```
+
+```{r preprocess-integrated}
+immune.combined.sct <- RunPCA(immune.combined.sct, verbose = FALSE)
+immune.combined.sct <- RunUMAP(immune.combined.sct, reduction = "pca", dims = 1:30, verbose = FALSE)
+immune.combined.sct <- FindNeighbors(immune.combined.sct, reduction = "pca", dims = 1:30)
+immune.combined.sct <- FindClusters(immune.combined.sct, resolution = 0.3)
+```
+
+
+```{r viz}
+p1 <- DimPlot(immune.combined.sct, reduction = "umap", group.by = "stim")
+p2 <- DimPlot(immune.combined.sct, reduction = "umap", group.by = "seurat_clusters", label = TRUE,
+    repel = TRUE)
+p3 <- DimPlot(immune.combined.sct, reduction = "umap", group.by = "seurat_annotations", label = TRUE,
+    repel = TRUE)
+
+p1
+p2
+p3
+```
+
+## DEG with scTransform
+
+Prior DEG analysis in Seurat with "FindMarkers", "PrepSCTFindMarkers" is used to revert the transformed count. This function uses minimum of the median UMI (calculated using the raw UMI counts) of individual objects to reverse the individual SCT regression model using minimum of median UMI as the sequencing depth covariate. The counts slot of the SCT assay is replaced with recorrected counts and the data slot is replaced with log1p of recorrected counts.
+
+```{r DE}
+immune.combined.sct <- PrepSCTFindMarkers(immune.combined.sct)
+
+immune.combined.sct$celltype.stim <- paste(immune.combined.sct$seurat_annotations, immune.combined.sct$stim,
+    sep = "_")
+Idents(immune.combined.sct) <- "celltype.stim"
+
+b.interferon.response <- FindMarkers(immune.combined.sct, assay = "SCT", ident.1 = "B_STIM", ident.2 = "B_CTRL",
+    verbose = FALSE)
+head(b.interferon.response, n = 15)
+```
+
+
+Find conserved markers irregardless of condition (stim vs unstim)
+
+```{r}
+Idents(immune.combined.sct) <- "seurat_annotations"
+nk.markers <- FindConservedMarkers(immune.combined.sct, assay = "SCT", ident.1 = "NK", grouping.var = "stim",
+    verbose = FALSE)
+head(nk.markers)
+```
+
+```{r Genes-viz}
+Idents(immune.combined.sct) <- "seurat_annotations"
+DefaultAssay(immune.combined.sct) <- "SCT"
+FeaturePlot(immune.combined.sct, features = c("CD3D", "GNLY", "IFI6"), split.by = "stim", max.cutoff = 3,
+    cols = c("grey", "red"))
+
+plots <- VlnPlot(immune.combined.sct, features = c("LYZ", "ISG15", "CXCL10"), split.by = "stim",
+    group.by = "seurat_annotations", pt.size = 0, combine = FALSE)
+wrap_plots(plots = plots, ncol = 1)
+```
+
