@@ -1,5 +1,5 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq with Seurat and Harmony"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document
@@ -9,4 +9,64 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(Seurat)
+library(harmony)
 ```
+
+## Load data 
+
+```{r load, warning=F}
+InstallData("ifnb")
+LoadData("ifnb")
+
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+```
+
+
+## Quality control
+
+```{r}
+for (i in 1:length(ifnb.list)){
+  ifnb.list[[i]][["percent.mt"]] <- PercentageFeatureSet(ifnb.list[[i]], pattern = "^MT-")
+  print(VlnPlot(ifnb.list[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3))
+}
+#Data has been QCed
+```
+
+## Preprocess
+```{r}
+ifnb_seurat <- ifnb %>%
+    Seurat::NormalizeData(verbose = FALSE) %>%
+    FindVariableFeatures(selection.method = "vst", nfeatures = 2000) %>% 
+    ScaleData(verbose = FALSE) %>% 
+    RunPCA(pc.genes = pbmc@var.genes, npcs = 20, verbose = FALSE)
+
+DimPlot(ifnb_seurat) # batch effect is highly apparent
+```
+
+## Integration with Harmony
+
+```{r integration}
+ifnb_seurat <- ifnb_seurat %>% 
+    RunHarmony("stim", plot_convergence = TRUE)
+
+ifnb_seurat <- ifnb_seurat %>% 
+    RunUMAP(reduction = "harmony", dims = 1:20) %>% 
+    FindNeighbors(reduction = "harmony", dims = 1:20) %>% 
+    FindClusters(resolution = 0.7) %>% 
+    identity()
+```
+
+## Viz
+
+```{r}
+p1 <- DimPlot(ifnb_seurat, reduction = "umap", group.by = "stim")
+p2 <- DimPlot(ifnb_seurat, reduction = "umap", group.by = "seurat_clusters", label = TRUE,
+    repel = TRUE)
+p3 <- DimPlot(ifnb_seurat, reduction = "umap", group.by = "seurat_annotations", label = TRUE,
+    repel = TRUE)
+
+p1
+p2
+p3
+```
+

@@ -1,5 +1,5 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq Basic Analysis Pipeline with Seurat"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document
@@ -15,12 +15,24 @@ library(tidyverse)
 
 ## Single Cell Analysis
 
-```{r load-data}
+```{r load-data, warning=F}
 InstallData("ifnb")
 LoadData("ifnb")
 
+# In this dataset, the source of batch is stimulation condition
 ifnb.list <- SplitObject(ifnb, split.by = "stim")
 ```
+
+## Quality control
+
+```{r}
+for (i in 1:length(ifnb.list)){
+  ifnb.list[[i]][["percent.mt"]] <- PercentageFeatureSet(ifnb.list[[i]], pattern = "^MT-")
+  print(VlnPlot(ifnb.list[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3))
+}
+#Data has been QCed
+```
+
 
 ## Preprocess scRNA-seq
 
@@ -68,3 +80,29 @@ p2
 p3
 ```
 
+## DEG Analysis
+
+Performing DEG can be useful to find differentially expressed genes that can be used as a marker. By default, Seurat uses Wilcoxon rank sum test. The code below find markers for all cell type and return only positive markers
+
+```{r}
+dat.combined <- SetIdent(dat.combined, value = "seurat_annotations")
+markers_all <- FindAllMarkers(dat.combined, only.pos = TRUE, min.pct = 0.25, 
+                              logfc.threshold = 0.25)
+top_markers <- markers_all %>%
+    group_by(cluster) %>%
+    slice_max(n = 1, order_by = avg_log2FC)
+```
+
+Visualization of DEGs 
+
+```{r}
+p2
+for (i in 1:nrow(top_markers)){
+  print(FeaturePlot(dat.combined, features = as.vector(top_markers$gene[i])))
+}
+
+markers_all %>%
+    group_by(cluster) %>%
+    top_n(n = 5, wt = avg_log2FC) -> top5
+DoHeatmap(dat.combined, features = top5$gene) + NoLegend()
+```

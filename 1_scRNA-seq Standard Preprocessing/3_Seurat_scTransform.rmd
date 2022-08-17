@@ -1,5 +1,5 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq with Seurat scTransform"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document
@@ -30,16 +30,29 @@ From seurat:
 In this data set, the batch source comes from two conditions, stimulated vs unstimulated. In this script, I am using scTransform to remove the batch effect. ScTransform uses Pearson residuals from “regularized negative binomial regression,” where cellular sequencing depth is utilized as a covariate in a generalized linear model to remove technical variance while still maintaining biological heterogeneity. One of the limitation of scTransform compared to other method is downstream analysis still needs to be performed on the RNA slot (unintegrated data). However, the scTransform v2 have function to perform downstream analysis, such as DEG without the need to switch back to RNA slot.
 
 
-## Load data and preprocess
+## Load data 
 
-If there are many batch sources, you can create a loop and subset the seurat object based on the batch sources. Then, you can apply scTransform (normalization + scaling + find variable features) and PCA.
-
-```{r load-data}
+```{r load, warning=F}
 InstallData("ifnb")
 LoadData("ifnb")
 
 ifnb.list <- SplitObject(ifnb, split.by = "stim")
+```
 
+
+## Quality control
+
+```{r}
+for (i in 1:length(ifnb.list)){
+  ifnb.list[[i]][["percent.mt"]] <- PercentageFeatureSet(ifnb.list[[i]], pattern = "^MT-")
+  print(VlnPlot(ifnb.list[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3))
+}
+#Data has been QCed
+```
+
+## Preprocess
+
+```{r preprocess}
 for (i in 1:length(ifnb.list)){
   ifnb.list[[i]] <- SCTransform(ifnb.list[[i]], vst.flavor = "v2", verbose = FALSE) %>%
     RunPCA(npcs = 30, verbose = FALSE) %>%
@@ -48,6 +61,8 @@ for (i in 1:length(ifnb.list)){
     FindClusters(resolution = 0.7, verbose = FALSE)
 }
 ```
+
+## Integration
 
 ```{r integration-SCT}
 features <- SelectIntegrationFeatures(object.list = ifnb.list, nfeatures = 3000)
@@ -65,6 +80,7 @@ immune.combined.sct <- FindNeighbors(immune.combined.sct, reduction = "pca", dim
 immune.combined.sct <- FindClusters(immune.combined.sct, resolution = 0.3)
 ```
 
+## Viz
 
 ```{r viz}
 p1 <- DimPlot(immune.combined.sct, reduction = "umap", group.by = "stim")

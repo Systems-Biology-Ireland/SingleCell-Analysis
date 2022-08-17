@@ -1,12 +1,87 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq with Seurat rPCA"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document
 ---
 
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
 library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(tidyverse)
+```
+
+## Single Cell Analysis
+
+```{r load-data, warning=F}
+InstallData("ifnb")
+LoadData("ifnb")
+
+# In this dataset, the source of batch is stimulation condition
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+```
+
+## Quality control
+
+```{r}
+for (i in 1:length(ifnb.list)){
+  ifnb.list[[i]][["percent.mt"]] <- PercentageFeatureSet(ifnb.list[[i]], pattern = "^MT-")
+  print(VlnPlot(ifnb.list[[i]], features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3))
+}
+#Data has been QCed
+```
+
+## Preprocess
+
+```{r}
+# normalize and identify variable features for each dataset independently
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+# select features that are repeatedly variable across datasets for integration run PCA on each
+# dataset using these features
+features <- SelectIntegrationFeatures(object.list = ifnb.list)
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+```
+
+## Integration
+
+The result of rPCA is very conservative. As such with a default *k.anchor* value of 5, it is sometimes not enough to eliminate batch effect. To increase the strenght of batch effect removal, you can increase the number of anchors. In this example, we are using 25 anchors.
+
+```{r}
+#use rpca for fast integration
+immune.anchors <- FindIntegrationAnchors(object.list = ifnb.list, 
+                                         anchor.features = features, 
+                                         reduction = "rpca", k.anchor = 25)
+# this command creates an 'integrated' data assay
+immune.combined <- IntegrateData(anchorset = immune.anchors)
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(immune.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+immune.combined <- ScaleData(immune.combined, verbose = FALSE)
+immune.combined <- RunPCA(immune.combined, npcs = 30, verbose = FALSE)
+immune.combined <- RunUMAP(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindNeighbors(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindClusters(immune.combined, resolution = 0.7)
+```
+
+```{r viz}
+p1 <- DimPlot(immune.combined, group.by = "seurat_clusters", label = T, repel = T)
+p2 <- DimPlot(immune.combined, group.by = "seurat_annotations", label = T, repel = T)
+p3 <- DimPlot(immune.combined, group.by = "stim")
+
+p1
+p2
+p3
 ```
