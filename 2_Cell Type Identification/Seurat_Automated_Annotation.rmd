@@ -7,6 +7,109 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
 library(Seurat)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(SeuratData)
 ```
+
+## Load Reference
+
+The refererence can be downloaded through: https://atlas.fredhutch.org/data/nygc/multimodal/pbmc_multimodal.h5seurat
+
+The reference file is 2 Gb in size. It is advised to not run this script if you have insufficient RAM.
+
+```{r}
+reference <- LoadH5Seurat("pbmc_multimodal.h5seurat")
+DimPlot(object = reference, reduction = "wnn.umap", group.by = "celltype.l2", 
+        label = TRUE, label.size = 3, repel = TRUE) + NoLegend()
+```
+
+## Preprocessing with scTransform
+
+Since the reference file was processed with scTransform, it is advised to also process the query with scTransform (even though other method pre-processing also works).
+
+## Preprocess and Integration
+
+```{r preprocess, warning=F}
+InstallData("ifnb")
+LoadData("ifnb")
+
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+
+for (i in 1:length(ifnb.list)){
+  ifnb.list[[i]] <- SCTransform(ifnb.list[[i]], vst.flavor = "v2", verbose = FALSE) %>%
+    RunPCA(npcs = 30, verbose = FALSE) %>%
+    RunUMAP(reduction = "pca", dims = 1:30, verbose = FALSE) %>%
+    FindNeighbors(reduction = "pca", dims = 1:30, verbose = FALSE) %>%
+    FindClusters(resolution = 0.7, verbose = FALSE)
+}
+
+features <- SelectIntegrationFeatures(object.list = ifnb.list, nfeatures = 3000)
+ifnb.list <- PrepSCTIntegration(object.list = ifnb.list, anchor.features = features)
+
+immune.anchors <- FindIntegrationAnchors(object.list = ifnb.list, normalization.method = "SCT",
+    anchor.features = features)
+immune.combined.sct <- IntegrateData(anchorset = immune.anchors, normalization.method = "SCT")
+
+immune.combined.sct <- RunPCA(immune.combined.sct, verbose = FALSE)
+immune.combined.sct <- RunUMAP(immune.combined.sct, reduction = "pca", dims = 1:30, verbose = FALSE)
+immune.combined.sct <- FindNeighbors(immune.combined.sct, reduction = "pca", dims = 1:30)
+immune.combined.sct <- FindClusters(immune.combined.sct, resolution = 2)
+```
+
+```{r}
+ref_anchors <- FindTransferAnchors(
+  reference = reference,
+  query = immune.combined.sct,
+  normalization.method = "SCT",
+  reference.reduction = "pca",
+  dims = 1:30
+)
+
+immune.combined.sct <- MapQuery(
+  anchorset = ref_anchors,
+  query = immune.combined.sct,
+  reference = reference,
+  refdata = list(
+    celltype.l1 = "celltype.l1",
+    celltype.l2 = "celltype.l2",
+    predicted_ADT = "ADT"
+  ),
+  reference.reduction = "pca"
+)
+```
+
+## VIZ
+
+```{r}
+p1 <- DimPlot(immune.combined.sct, group.by = "seurat_annotations", label = T)
+p2 <- DimPlot(immune.combined.sct, group.by = "predicted.celltype.l1", label = T)
+p3 <- DimPlot(immune.combined.sct, group.by = "predicted.celltype.l2", label = T)
+
+p1
+p2
+p3
+```
+
+
+```{r}
+meta <- immune.combined.sct@meta.data
+
+celltype_summary <- meta %>%
+  group_by(seurat_clusters) %>%
+  count(predicted.celltype.l2) %>%
+  slice(which.max(n)) %>%
+  ungroup()
+celltype_summary <- celltype_summary %>% dplyr::select(-n)
+names(celltype_summary)[2] <- "l2_Cluster"
+
+meta <- left_join(meta, celltype_summary)
+immune.combined.sct@meta.data$l2_Cluster <- meta$l2_Cluster
+
+p4 <- DimPlot(immune.combined.sct, group.by = "l2_Cluster", label = T, repel = T)
+p4
+p1
+```
+
