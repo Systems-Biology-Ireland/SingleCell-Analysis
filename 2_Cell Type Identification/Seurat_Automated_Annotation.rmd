@@ -1,5 +1,5 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq Cell Type Annotation with PBMC Multimodal Reference (Seurat)"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document

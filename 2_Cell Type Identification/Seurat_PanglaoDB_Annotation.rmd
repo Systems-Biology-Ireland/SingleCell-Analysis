@@ -1,5 +1,5 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq Marker Based Annotation with PanglaoDB"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document
@@ -7,6 +7,128 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
 library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(tidyverse)
 ```
+
+
+## Single Cell Analysis
+
+```{r load-data, warning=F}
+InstallData("ifnb")
+LoadData("ifnb")
+
+# In this dataset, the source of batch is stimulation condition
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+
+# normalize and identify variable features for each dataset independently
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+# select features that are repeatedly variable across datasets for integration run PCA on each
+# dataset using these features
+features <- SelectIntegrationFeatures(object.list = ifnb.list)
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+#use rpca for fast integration
+immune.anchors <- FindIntegrationAnchors(object.list = ifnb.list, 
+                                         anchor.features = features, 
+                                         reduction = "rpca", k.anchor = 25)
+# this command creates an 'integrated' data assay
+immune.combined <- IntegrateData(anchorset = immune.anchors)
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(immune.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+immune.combined <- ScaleData(immune.combined, verbose = FALSE)
+immune.combined <- RunPCA(immune.combined, npcs = 30, verbose = FALSE)
+immune.combined <- RunUMAP(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindNeighbors(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindClusters(immune.combined, resolution = 2)
+```
+
+## Markers Based Annotation with PanglaoDB Ver. 27 March 2020
+
+A requirement of using PanglaoDB is to know the expected cell types in the dataset. If you are unsure, you can run *FindMarkersAll* on seurat clusters to get a general idea on what cell type to include. It is recommended to perform only *general cell type annotation* with this method, Seurat is not as good predicting a rarer cell type but perform well on general one.
+
+```{r}
+tsv_file <- gzfile("./PanglaoDB_markers_27_Mar_2020.tsv")  
+panglaodb <- read.csv(tsv_file,header=T,sep = "\t") 
+panglaodb <- dplyr::filter(panglaodb,species == "Hs" | species == "Mm Hs")# Human subset 
+# panglaodb <- dplyr::filter(panglaodb,organ == "Connective tissue" |
+#                              organ == "Epithelium" |
+#                              organ == "Immune system" |
+#                              organ == "Reproductive"|
+#                              organ == "Vasculature" |
+#                              organ == "Smooth muscle"
+# )
+panglaodb <- split(as.character(panglaodb$official.gene.symbol), panglaodb$cell.type)
+
+DefaultAssay(object = immune.combined) <- "RNA"
+immune.combined <- 
+  AddModuleScore(immune.combined,
+               features = list(panglaodb$`Plasma cells`,
+                               panglaodb$`B cells`,
+                               panglaodb$`Mast cells`,
+                               panglaodb$Macrophages,
+                               panglaodb$`Dendritic cells`,
+                               panglaodb$`T cells`,
+                               panglaodb$Monocytes,
+                               panglaodb$`NK cells`,
+                               panglaodb$Erythroblasts
+                               ),
+                  name = c("Plasma.","B.", "Mast.","Macrophages.",
+                           "DC.","T.",
+                           "Monocytes.", "NK.","Erythroblasts."), #15
+               search = T)
+```
+
+# Think if median or mode scoring of clusters is the best method for markers based annotation
+
+```{r median scoring}
+meta <- immune.combined@meta.data
+
+meta_celltype <- meta[,8:ncol(meta)]
+max <- colnames(meta_celltype)[apply(meta_celltype,1,which.max)]
+max <- gsub("\\..*","", max)
+
+max_celltype <- apply(meta_celltype, 1, max)
+
+meta$max <- max
+meta$max_celltype <- max_celltype
+
+meta_sum <- meta %>% dplyr::select(seurat_clusters, max, max_celltype)
+
+meta_sum_median <- meta_sum %>%
+  group_by(seurat_clusters,max)%>% 
+  summarise(Median=median(max_celltype)) %>%
+  ungroup()
+meta_sum_median <- meta_sum_median %>%
+  group_by(seurat_clusters) %>%
+  slice(which.max(Median)) %>%
+  ungroup()
+
+meta_sum_median <- meta_sum_median %>% dplyr::select(-Median)
+names(meta_sum_median)[2] <- "celltype_PanglaoDB"
+
+meta <- left_join(meta, meta_sum_median)
+immune.combined@meta.data$celltype_PanglaoDB <- meta$celltype_PanglaoDB
+immune.combined@meta.data$celltype_PanglaoDB_individual <- meta$max
+```
+
+```{r VIZ}
+DimPlot(immune.combined, group.by = "celltype_PanglaoDB")
+DimPlot(immune.combined, group.by = "celltype_PanglaoDB_individual")
+DimPlot(immune.combined, group.by = "seurat_annotations")
+DimPlot(immune.combined, group.by = "seurat_clusters")
+```
+

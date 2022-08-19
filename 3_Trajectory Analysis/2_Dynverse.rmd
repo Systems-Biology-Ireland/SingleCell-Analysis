@@ -5,8 +5,116 @@ date: "2022-08-11"
 output: html_document
 ---
 
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyverse)
 library(Seurat)
+library(SeuratData)
+library(patchwork)
+library(tidyverse)
+library(dyno)
 ```
+
+## Single Cell Analysis
+
+```{r load-data, warning=F}
+InstallData("ifnb")
+LoadData("ifnb")
+
+# In this dataset, the source of batch is stimulation condition
+ifnb.list <- SplitObject(ifnb, split.by = "stim")
+```
+
+## Quality control
+
+```{r}
+
+# normalize and identify variable features for each dataset independently
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 3000)
+})
+
+# select features that are repeatedly variable across datasets for integration run PCA on each
+# dataset using these features
+features <- SelectIntegrationFeatures(object.list = ifnb.list)
+ifnb.list <- lapply(X = ifnb.list, FUN = function(x) {
+    x <- ScaleData(x, features = features, verbose = FALSE)
+    x <- RunPCA(x, features = features, verbose = FALSE)
+})
+
+#use rpca for fast integration
+immune.anchors <- FindIntegrationAnchors(object.list = ifnb.list, 
+                                         anchor.features = features, 
+                                         reduction = "rpca", k.anchor = 25)
+# this command creates an 'integrated' data assay
+immune.combined <- IntegrateData(anchorset = immune.anchors)
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(immune.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+immune.combined <- ScaleData(immune.combined, verbose = FALSE)
+immune.combined <- RunPCA(immune.combined, npcs = 30, verbose = FALSE)
+immune.combined <- RunUMAP(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindNeighbors(immune.combined, reduction = "pca", dims = 1:30)
+immune.combined <- FindClusters(immune.combined, resolution = 0.7)
+```
+
+## Trajectory Analysis with Dynverse
+
+Pseudotime inference with Dynverse for cell trajectory construction. You need to provide *raw counts* and *normalized counts* to create a dataset for trajectory inference
+
+```{r}
+ifnb_subset <- subset(ifnb, subset = seurat_annotations %in% c("T activated", "CD4 Naive T", "CD8 T",
+                                                               "CD4 Memory T"))
+
+count_raw <- t(as.matrix(ifnb_subset@assays$RNA@counts))
+count_norm <- t(as.matrix(NormalizeData(ifnb_subset@assays$RNA@counts)))
+dataset <- wrap_expression(
+  counts = count_raw,
+  expression = count_norm
+) 
+#the matrix needs to be cell x genes, the transpose of a typical Seurat matrix
+
+group_df <- data.frame("group_id"=ifnb_subset@meta.data$seurat_annotations,
+                       "cell_id"=rownames(ifnb_subset@meta.data))
+
+dataset <- add_grouping(
+  dataset = dataset, grouping = group_df)
+
+guidelines <- guidelines_shiny(dataset)
+methods_selected <- guidelines$methods_selected
+methods_selected <- methods_selected[1]
+
+dataset <- add_prior_information(
+  dataset,
+  groups_id = group_df,
+  start_id = "AAACATACTGCTGA.1", #CD4 Naive
+  end_id = "AAGGTCTGACGGTT.1" #CD4 Memory
+)
+
+model <- infer_trajectory(dataset, methods_selected)
+```
+
+```{r viz}
+model <- model %>% add_grouping(grouping = group_df)
+
+plot_dimred(
+  model, 
+  expression_source = dataset$expression, 
+  label_milestones = T,
+  color_cells = "feature",
+  feature_oi = "SELL"
+)
+
+plot_dimred(
+  model, 
+  expression_source = dataset$expression, 
+  label_milestones = T,
+  color_cells = "grouping"
+)
+```
+
+
