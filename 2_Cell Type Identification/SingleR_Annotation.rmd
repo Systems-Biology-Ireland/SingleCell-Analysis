@@ -94,8 +94,8 @@ meta <- immune.combined@meta.data
 
 celltype_summary <- meta %>%
   group_by(seurat_clusters) %>%
-  count(SingleR_fine) %>%
-  slice(which.max(n)) %>%
+  dplyr::count(SingleR_fine) %>%
+  dplyr::slice(which.max(n)) %>%
   ungroup()
 celltype_summary <- celltype_summary %>% dplyr::select(-n)
 names(celltype_summary)[2] <- "SingleR_Cluster"
