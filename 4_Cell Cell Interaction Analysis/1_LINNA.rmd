@@ -1,5 +1,5 @@
 ---
-title: "Single Cell RNA-seq Basic Analysis Pipeline"
+title: "Single Cell RNA-seq Cell-Cell Interaction Analysis"
 author: "Zain Arifin"
 date: "2022-08-11"
 output: html_document
@@ -9,4 +9,80 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(Seurat)
+library(magrittr)
+library(liana)
 ```
+
+
+Liana (a LIgand-receptor ANalysis frAmework) is a cell-cell interaction method that compiles various cell-cell interaction methods, including:
+
+1. CellPhoneDBv2 (*, $)
+
+2. CellChat
+
+3. NATMI (*, $)
+
+4. Connectome (edge_weights) (*, $)
+
+5. SingleCellSignalR (LRscores) (SCA) (*, $)
+
+6. iTALK-inspired 1-vs-rest LogFC score (logfc_comb) (*, $)
+
+7. CytoTalk-inspired cross-talk scores (*)
+
+8. consensus_rank of the predictions is also provided using the RobustRankAggregate package
+
+*The scoring systems from these methods were re-implemented in LIANA in order to account for multimeric complexes, simplify the calls to the individual pipelines, or reduce any possible inconsistencies and redundancies in their downstream integration. 
+
+$ Default methods in LIANA.
+
+liana takes Seurat and SingleCellExperiment objects as input, containing processed counts and clustered cells.
+
+```{r data-input}
+#Humand PBMC from SeuratData
+#example data is normalized but not scaled
+
+liana_path <- system.file(package = "liana")
+testdata <-
+  readRDS(file.path(liana_path , "testdata", "input", "testdata.rds"))
+
+testdata <- SetIdent(testdata, value = testdata@meta.data$seurat_annotations)
+```
+
+```{r run-Liana}
+# Run liana
+liana_test <- liana_wrap(testdata)
+
+# Liana returns a list of results, each element of which corresponds to a method
+liana_test %>% dplyr::glimpse()
+
+liana_test <- liana_test %>%
+  liana_aggregate() #*
+
+# (*) The aggregate consensus rank (aggregate_rank) is obtained using a re-implementation of the RRA method from the RobustRankAggreg package.
+# 
+# RRA scores can be interpreted as p-values and interactions which are ranked consistently higher than random are assigned low scores/p-values.
+```
+
+Visualizatio of interaction from B cell to other lymphocites
+
+```{r}
+liana_trunc <- liana_test %>%
+   # only keep interactions concordant between methods
+  filter(aggregate_rank <= 0.01) # this can be FDR-corr if n is too high
+
+liana_trunc %>%
+  liana_dotplot(source_groups = c("B"),
+                target_groups = c("NK", "CD8 T", "B"),
+                ntop = 30)
+if(!require("circlize")){
+  install.packages("circlize", quiet = TRUE,
+                   repos = "http://cran.us.r-project.org")
+}
+
+p <- chord_freq(liana_trunc,
+                source_groups = c("CD8 T", "NK", "B"),
+                target_groups = c("CD8 T", "NK", "B"))
+
+```
+
